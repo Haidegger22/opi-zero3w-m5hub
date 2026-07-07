@@ -180,12 +180,12 @@ Line 4: Sym   Z   X   C   V   B   N   M   SPC   ,       →
 | D6 | 6 `0x36` | y `0x79` | h `0x68` | n `0x6E` |
 | D7 | 7 `0x37` | u `0x75` | j `0x6A` | m `0x6D` |
 | D8 | 8 `0x38` | i `0x69` | k `0x6B` | SPACE `0x2C` |
-| D9 | 9 `0x39` | o `0x6F` | l `0x6C` | , `0x2C` |
+| D9 | 9 `0x39` | o `0x6F` | l `0x6C` | — |
 | D10 | Back `0x08` | p `0x70` | Enter `0x0D` | → `0x87` |
 | D11 | ↑ `0x86` | Fn `0x00` | ← `0x84` | — |
 | D12 | — | ↓ `0x85` | — | — |
 
-> ⚠️ В этой версии SPACE в normal-режиме = `0x2C` (ASCII-запятая!), а в Sym/Shift = `0x20`.
+> ⚠️ В этой версии SPACE в normal-режиме = `0x2C` (ASCII-запятая!), а в Sym/Shift/Fn = `0x20`. Запятая (`,`) в normal-режиме не выводится — только через Sym.
 
 ### Режим 1 — Sym+Key
 
@@ -239,7 +239,7 @@ Line 4: Sym   Z   X   C   V   B   N   M   SPC   ,       →
 | D5 | 5 `0x85` | T `0x91` | G `0x9E` | B `0xAA` |
 | D6 | 6 `0x86` | Y `0x92` | H `0x9F` | N `0xAB` |
 | D7 | 7 `0x87` | U `0x93` | J `0xA0` | M `0xAC` |
-| D8 | 8 `0x88` | I `0x94` | K `0xA1` | SPACE `0x2C` |
+| D8 | 8 `0x88` | I `0x94` | K `0xA1` | SPACE `0x20` |
 | D9 | 9 `0x89` | O `0x95` | L `0xA2` | — |
 | D10 | Back `0x08` | P `0x96` | Enter `0x0D` | → `0x87` |
 | D11 | ↑ `0x86` | Fn `0x00` | ← `0x84` | — |

@@ -419,22 +419,22 @@ DISPLAY=:0 python3 m5hub.py
 
 ```bash
 # Создать скрипт-обёртку (надёжнее чем systemd для DISPLAY=:0):
-cat > /tmp/start_m5hub.sh << 'EOF'
+cat > /home/orangepi/.openclaw/workspace/start_m5hub.sh << 'EOF'
 #!/bin/bash
 cd /home/orangepi/.openclaw/workspace
 export DISPLAY=:0
 exec python3 -u m5hub.py >> /tmp/m5hub.log 2>&1
 EOF
-chmod +x /tmp/start_m5hub.sh
+chmod +x /home/orangepi/.openclaw/workspace/start_m5hub.sh
 
 # Добавить в crontab:
-(crontab -l 2>/dev/null; echo '@reboot sleep 10 && nohup /tmp/start_m5hub.sh </dev/null >/dev/null 2>&1 &') | crontab -
+(crontab -l 2>/dev/null; echo '@reboot sleep 15 && nohup /home/orangepi/.openclaw/workspace/start_m5hub.sh </dev/null >/dev/null 2>&1 &') | crontab -
 
 # Проверить:
 crontab -l
 ```
 
-Примечание: `sleep 10` нужен чтобы дождаться загрузки X-сервера.
+Примечание: `sleep 15` нужен чтобы дождаться загрузки X-сервера.
 
 ### Шаг 7. Проверка раскладки
 

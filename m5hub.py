@@ -64,6 +64,9 @@ class Hub:
         self._t={'j':0,'s':0,'k':0}
         self._sb=False; self._sf=False; self._sp=0
         self._kl=0
+        self._bs_last=0.0      # last Backspace timestamp
+        self._bs_repeat=False  # auto-repeat active
+        self._bs_next=0.0      # next repeat timestamp
         self._cx=self._cy=32768
 
         # Виртуальная позиция (вместо query_pointer)
@@ -252,43 +255,59 @@ class Hub:
                 # DEBUG: log raw codes to /tmp/cardkb.log
                 with open('/tmp/cardkb.log','a') as f:
                     f.write(f'{time.time():.3f} raw=0x{k:02X} prev=0x{self._kl:02X}\n')
+                # Double-tap Backspace detection
+                now=time.time()
+                if k==0x08:
+                    if self._bs_last>0 and now-self._bs_last<0.8:
+                        self._bs_repeat=True
+                        self._bs_next=now+0.2
+                        print("[m5hub] BS auto-repeat (double-tap)")
+                    self._bs_last=now
+                elif k and k!=0:
+                    if self._bs_repeat:
+                        print("[m5hub] BS auto-repeat off")
+                    self._bs_repeat=False
+                    self._bs_last=0
                 if self._kl and self._kl in CKM: self._kv(CKM[self._kl],0,self._kl)
                 if k and k in CKM: self._kv(CKM[k],1,k)
                 self._kl=k
         except: pass
 
     def _kv(self,s,p,raw=0):
-        # CardKB sends uppercase ASCII (0x41-0x5A) for Shift+letter
-        need_shift = bool(0x41 <= raw <= 0x5A)
-        lookup = s + 0x20 if need_shift else s
-        kc = self.d.keysym_to_keycode(lookup)
-        if not kc:
-            kc = self.d.keysym_to_keycode(s)
-        if kc:
-            # Fast path: XTest (works for letters/digits in current layout)
-            if need_shift:
-                if p:
-                    xtest.fake_input(self.d, X.KeyPress, 50)
+        if not p:
+            if 0x41 <= raw <= 0x5A:
+                kc = self.d.keysym_to_keycode(s + 0x20)
+                if kc:
+                    xtest.fake_input(self.d, X.KeyRelease, kc)
                     self.d.flush()
-                xtest.fake_input(self.d, X.KeyPress if p else X.KeyRelease, kc)
-                self.d.flush()
-                if not p:
                     xtest.fake_input(self.d, X.KeyRelease, 50)
                     self.d.flush()
-            else:
-                xtest.fake_input(self.d, X.KeyPress if p else X.KeyRelease, kc)
+            elif raw in _XT_SYMS:
+                kc = self.d.keysym_to_keycode(s)
+                if kc:
+                    xtest.fake_input(self.d, X.KeyRelease, kc)
+                    self.d.flush()
+            return
+        if raw in _XT_SYMS:
+            is_upper = 0x41 <= raw <= 0x5A
+            lookup = s + 0x20 if is_upper else s
+            kc = self.d.keysym_to_keycode(lookup)
+            if not kc:
+                kc = self.d.keysym_to_keycode(s)
+            if kc:
+                if is_upper:
+                    xtest.fake_input(self.d, X.KeyPress, 50)
+                    self.d.flush()
+                xtest.fake_input(self.d, X.KeyPress, kc)
                 self.d.flush()
-        elif p:
-            # Fallback: xdotool type for symbols not in current X11 layout
-            # (e.g. {}[]|~ etc. on Russian layout)
-            try:
-                subprocess.run(
-                    ['xdotool','type','--clearmodifiers','--delay','0',chr(s)],
-                    capture_output=True, timeout=1,
-                    env={'DISPLAY': os.environ.get('DISPLAY',':0')})
-            except Exception:
-                pass
-
+            return
+        try:
+            subprocess.run(
+                ['xdotool','type','--clearmodifiers','--delay','0',chr(s)],
+                capture_output=True, timeout=1,
+                env={'DISPLAY': os.environ.get('DISPLAY',':0')})
+        except Exception:
+            pass
     def run(self):
         print("[m5hub] 🚀 J0 S1 K2 (v9 — median filter + PaHub reset)")
         self.ro.warp_pointer(self.sw//2,self.sh//2); self.d.flush()
@@ -309,6 +328,10 @@ class Hub:
                 if t-self._t['j']>=0.030: self._j(); self._t['j']=t
                 if t-self._t['s']>=0.020: self._s(); self._t['s']=t
                 if t-self._t['k']>=0.060: self._k(); self._t['k']=t
+                # Backspace auto-repeat
+                if self._bs_repeat and t>=self._bs_next:
+                    self._kv(0xFF08,1,0x08); self._kv(0xFF08,0,0x08)
+                    self._bs_next=t+0.05
                 time.sleep(0.002)
             except KeyboardInterrupt: break
         print(f"[m5hub] Off (ошибок I2C: {self._err_count})")
@@ -320,6 +343,21 @@ class Hub:
                        env={'DISPLAY':os.environ.get('DISPLAY',':0')})
         print('[m5hub] 🇷🇺 Раскладка восстановлена')
 
+
+# Symbols handled by XTest (letters, digits, space, control keys)
+# Everything else goes through xdotool type
+_XT_SYMS = frozenset(
+    list(range(0x30, 0x3A))   # 0-9
+    + list(range(0x41, 0x5B)) # A-Z
+    + list(range(0x61, 0x7B)) # a-z
+    + [0x20,   # Space
+       0x0D,   # Enter
+       0x09,   # Tab
+       0x1B,   # Esc
+       0x08,   # Backspace
+       0xB4, 0xB5, 0xB6, 0xB7,  # Arrows (our firmware)
+    ]
+)
 
 CKM = {
     # ── Control keys ──
@@ -337,7 +375,7 @@ CKM = {
     0xB7: 0xFF53,  # Right
 
     # ── ASCII printables 1:1 with X11 keysyms ──
-    **{c: c for c in range(0x21, 0x5B)},  # ! through Z
+    **{c: c for c in range(0x21, 0x5C)},  # ! through Z
     **{c: c for c in range(0x5C, 0x7F)},  # \ through ~
     **{c: c for c in range(0x61, 0x7B)},  # a-z
 }

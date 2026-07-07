@@ -67,6 +67,7 @@ class Hub:
         self._bs_last=0.0      # last Backspace timestamp
         self._bs_repeat=False  # auto-repeat active
         self._bs_next=0.0      # next repeat timestamp
+        self._layout='us'        # current keyboard layout
         self._cx=self._cy=32768
 
         # Виртуальная позиция (вместо query_pointer)
@@ -268,6 +269,12 @@ class Hub:
                         print("[m5hub] BS auto-repeat off")
                     self._bs_repeat=False
                     self._bs_last=0
+                # Fn+Space (0xAF) — переключение раскладки US/RU
+                if k==0xAF:
+                    self._layout='ru' if self._layout=='us' else 'us'
+                    subprocess.run(['setxkbmap',self._layout], capture_output=True,
+                                   env={'DISPLAY':os.environ.get('DISPLAY',':0')})
+                    print(f'[m5hub] Раскладка: {self._layout.upper()}')
                 if self._kl and self._kl in CKM: self._kv(CKM[self._kl],0,self._kl)
                 if k and k in CKM: self._kv(CKM[k],1,k)
                 self._kl=k

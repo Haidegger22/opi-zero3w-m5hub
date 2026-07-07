@@ -188,6 +188,119 @@ m5hub.py
 | v8 | — | Переход на PaHub-сброс перед каждым переключением |
 | v7 | — | Первая стабильная версия с тремя юнитами |
 
+## Пошаговая установка (Step-by-Step)
+
+> Все команды вводить в терминале Orange Pi Zero 3W.
+
+### Шаг 1. Включить I2C
+
+```bash
+# Проверить, что I2C-0 включён
+ls /dev/i2c-0
+
+# Если нет — добавить в /boot/armbianEnv.txt или через orangepi-config
+sudo orangepi-config
+# → System → Hardware → I2C0 → Enable
+# После включения перезагрузить:
+sudo reboot
+```
+
+### Шаг 2. Установить системные зависимости
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip python3-xlib xdotool i2c-tools
+```
+
+### Шаг 3. Проверить железо
+
+```bash
+# Подключить PaHub к GPIO (GND, 5V, SDA, SCL)
+# Подключить юниты к PaHub: J0-джойстик, J1-скролл, J2-клавиатура
+
+# Проверить, что PaHub виден:
+sudo i2cdetect -y 0
+# Должен появиться адрес 0x70
+
+# Проверить юниты (после выбора канала PaHub скриптом):
+# Но проще сразу запустить m5hub — он сам всё найдёт
+```
+
+### Шаг 4. Склонировать репозиторий
+
+```bash
+cd ~
+git clone https://github.com/Haidegger22/opi-m5hub.git
+cd opi-m5hub
+```
+
+### Шаг 5. Первый запуск
+
+```bash
+# Запустить вручную для проверки:
+DISPLAY=:0 python3 m5hub.py
+
+# Должен появиться вывод:
+# [m5hub] Экран: 1024x600
+# [m5hub] ⚙️ Центр: X=... Y=... (n=50)
+# [m5hub] 🚀 J0 S1 K2 (v9 ...)
+# [m5hub] 🇺🇸 Раскладка: US
+# [m5hub] 🟢 Готов
+
+# Пошевелить джойстик — курсор должен двигаться
+# Нажать на джойстик — левый клик (синий LED)
+# Покрутить скролл — колёсико (фиолетовый LED)
+# Нажать на скролл — левый клик (зелёный LED)
+# Удерживать скролл >0.5 сек — правый клик (красный LED)
+# Нажать клавиши на CardKB — должен печатать в любом текстовом поле
+
+# Остановить: Ctrl+C
+```
+
+### Шаг 6. Автозапуск через systemd
+
+```bash
+# Создать службу:
+sudo tee /etc/systemd/system/m5hub.service << 'EOF'
+[Unit]
+Description=M5Stack Hub — Joystick + Scroll + Keyboard
+After=graphical.target
+
+[Service]
+Type=simple
+User=orangepi
+Environment=DISPLAY=:0
+WorkingDirectory=/home/orangepi/opi-m5hub
+ExecStart=/usr/bin/python3 -u m5hub.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target
+EOF
+
+# Включить и запустить:
+sudo systemctl daemon-reload
+sudo systemctl enable m5hub
+sudo systemctl start m5hub
+
+# Проверить статус:
+sudo systemctl status m5hub
+
+# Посмотреть логи:
+journalctl -u m5hub -f
+```
+
+### Шаг 7. Проверка раскладки
+
+```bash
+# После запуска m5hub раскладка должна быть US:
+DISPLAY=:0 setxkbmap -query
+# layout:     us
+
+# При остановке m5hub раскладка восстановится на us,ru,ru
+```
+
 ## Лицензия
 
 MIT

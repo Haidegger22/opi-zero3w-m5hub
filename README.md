@@ -415,26 +415,42 @@ DISPLAY=:0 python3 m5hub.py
 # Остановить: Ctrl+C
 ```
 
-### Шаг 6. Автозапуск после перезагрузки
+### Шаг 6. Автозапуск через systemd
 
 ```bash
-# Создать скрипт-обёртку (надёжнее чем systemd для DISPLAY=:0):
-cat > /home/orangepi/.openclaw/workspace/start_m5hub.sh << 'EOF'
-#!/bin/bash
-cd /home/orangepi/.openclaw/workspace
-export DISPLAY=:0
-exec python3 -u m5hub.py >> /tmp/m5hub.log 2>&1
-EOF
-chmod +x /home/orangepi/.openclaw/workspace/start_m5hub.sh
+# Создать файл службы:
+cat > /tmp/m5hub.service << 'EOF'
+[Unit]
+Description=M5Stack Hub — Joystick + Scroll + Keyboard
+After=graphical.target
 
-# Добавить в crontab:
-(crontab -l 2>/dev/null; echo '@reboot sleep 15 && nohup /home/orangepi/.openclaw/workspace/start_m5hub.sh </dev/null >/dev/null 2>&1 &') | crontab -
+[Service]
+Type=simple
+User=orangepi
+Environment=DISPLAY=:0
+WorkingDirectory=/home/orangepi/.openclaw/workspace
+ExecStart=/usr/bin/python3 -u m5hub.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target
+EOF
+
+# Установить (потребуется sudo-пароль):
+sudo cp /tmp/m5hub.service /etc/systemd/system/m5hub.service
+sudo systemctl daemon-reload
+sudo systemctl enable m5hub
+sudo systemctl start m5hub
 
 # Проверить:
-crontab -l
+sudo systemctl status m5hub
+
+# Логи:
+journalctl -u m5hub -f
 ```
 
-Примечание: `sleep 15` нужен чтобы дождаться загрузки X-сервера.
+Преимущества systemd: авто-перезапуск при падении, логи через journalctl, запуск до входа в систему.
 
 ### Шаг 7. Проверка раскладки
 

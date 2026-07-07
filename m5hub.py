@@ -181,8 +181,8 @@ class Hub:
         sdy=statistics.median(self._dy_hist)
 
         # Простой линейный scale
-        sx=int(sdx/self._scale*100)
-        sy=int(sdy/self._scale*100)
+        sx=int(sdx/self._scale*110)
+        sy=int(sdy/self._scale*110)
 
         if sx==0 and sy==0: return
 

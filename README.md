@@ -100,20 +100,39 @@ subprocess.run(['setxkbmap', 'us'], env={'DISPLAY': ':0'})
 ## Особенности CardKB
 
 **Официальная документация:** [docs.m5stack.com/en/unit/cardkb_1.1](https://docs.m5stack.com/en/unit/cardkb_1.1)  
-**Исходники прошивки (ATmega328P):** [GitHub/M5-ProductExampleCodes](https://github.com/m5stack/M5-ProductExampleCodes/tree/master/Unit/CARDKB/firmware_328p/CardKeyBoard)  
+**Исходники прошивки (ATMega8A):** [GitHub/M5-ProductExampleCodes](https://github.com/m5stack/M5-ProductExampleCodes/tree/master/Unit/CARDKB/firmware_328p/CardKeyBoard)  
+**Communication Protocol (схема матрицы):** [PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/806/Unit_CardKB_v1_1_User_Manual_EN.pdf)  
 **I2C-адрес:** 0x5F  
 **Протокол:** master читает 1 байт — raw-код последней нажатой клавиши (ASCII + спецкоды 180–183 для стрелок)
 
-### Раскладка (стоковая прошивка ATmega328P)
+### Схема клавиатуры (из официальной документации)
+
+**Схема матрицы клавиш и распиновка:** [Communication Protocol PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/806/Unit_CardKB_v1_1_User_Manual_EN.pdf)
+
+Физическая раскладка — 50 клавиш, матрица 4 строки × 12 столбцов:
 
 ```
-Row 1: Esc   1   2   3   4   5   6   7   8   9   0   Del
-Row 2: Tab   Q   W   E   R   T   Y   U   I   O   P
-Row 3:  ←    ↑   A   S   D   F   G   H   J   K   L   Enter
-Row 4:  ↓    →   Z   X   C   V   B   N   M   ,   .   Space
+          D0    D1    D2    D3    D4    D5    D6    D7    D8    D9   D10   D11
+         ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+  A3 ───│Esc │ 1  │ 2  │ 3  │ 4  │ 5  │ 6  │ 7  │ 8  │ 9  │ 0  │Del │
+         ├────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┤
+  A2 ───│Tab │ Q  │ W  │ E  │ R  │ T  │ Y  │ U  │ I  │ O  │ P  │ —  │
+         ├────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┤
+  A1 ───│ ←  │ ↑  │ A  │ S  │ D  │ F  │ G  │ H  │ J  │ K  │ L  │Ent │
+         ├────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┼────┤
+  A0 ───│ ↓  │ →  │ Z  │ X  │ C  │ V  │ B  │ N  │ M  │ ,  │ .  │Spc │
+         └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
 ```
 
-Модификаторы: **Shift** (d12), **Sym** (d15), **Fn** (d14) — отдельные пины, не в матрице.
+**Модификаторы (отдельные пины ATmega8A, не в матрице):**
+- `Sym` — пин PB7 (d15)
+- `Shift` — пин PB4 (d12)
+- `Fn` — пин PB6 (d14)
+
+**Строки сканирования (выходы ATmega8A):** A3, A2, A1, A0  
+**Столбцы (входы с pull-up):** D0–D11 (PORTD) + D12–D15 (PORTB)
+
+> Полная электрическая схема и таблица кодов — в [Communication Protocol PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/806/Unit_CardKB_v1_1_User_Manual_EN.pdf)
 
 ### Режимы вывода
 

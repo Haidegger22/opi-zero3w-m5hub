@@ -134,6 +134,60 @@ subprocess.run(['setxkbmap', 'us'], env={'DISPLAY': ':0'})
 
 > Полная электрическая схема и таблица кодов — в [Communication Protocol PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/806/Unit_CardKB_v1_1_User_Manual_EN.pdf)
 
+### ⚠️ Две версии прошивки
+
+Существует **два варианта** CardKB, физически отличающихся расположением клавиш и кодами:
+
+| Параметр | Наша прошивка (ATmega328P) | Оф. документация (CardKB v1.1) |
+|----------|---------------------------|-------------------------------|
+| Стрелки | Слева (←↑ в A1, ↓→ в A0) | Справа (↑↓←→ в правой колонке) |
+| Коды стрелок | 0xB4–0xB7 (180–183) | 0x84–0x87 (132–135) |
+| Backspace | 0x08 (normal) | 0x08 (normal) |
+| Del (shift) | 0x7F | 0x7F |
+| Источник | [GitHub-прошивка](https://github.com/m5stack/M5-ProductExampleCodes/tree/master/Unit/CARDKB/firmware_328p/CardKeyBoard) | [Оф. сайт](https://docs.m5stack.com/en/unit/cardkb_1.1) |
+
+**Наш экземпляр использует прошивку ATmega328P** — это подтверждено логами `/tmp/cardkb.log`.
+
+### Официальная таблица кодов CardKB v1.1 (с сайта M5Stack)
+
+> Физическая раскладка НА САЙТЕ отличается от нашей! Стрелки справа, а не слева.
+
+**Line 1 (верхний ряд):** `Esc 1 2 3 4 5 6 7 8 9 Back ↑`
+**Line 2:** `Tab Q W E R T Y U I O P Fn ↓`
+**Line 3:** `Shift A S D F G H J K L Enter ←`
+**Line 4:** `Sym Z X C V B N M SPACE , →`
+
+<details>
+<summary>Таблица кодов по режимам (развернуть)</summary>
+
+#### Normal (обычное нажатие)
+
+| Line 1 | ESC | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | Back (0x08) | ↑ (0x86) |
+|--------|-----|---|---|---|---|---|---|---|---|---|-------------|----------|
+| **Line 2** | TAB | Q | W | E | R | T | Y | U | I | O | P | Fn | ↓ (0x85) |
+| **Line 3** | Shift | A | S | D | F | G | H | J | K | L | Enter | ← (0x84) |
+| **Line 4** | Sym | Z | X | C | V | B | N | M | SPACE (0x20) | , (0x2C) | → (0x87) |
+
+Буквы выводятся строчными (q, w, e...). Модификаторы (Shift, Sym, Fn) выдают 0x00.
+
+#### Sym+Key
+
+| Line 1 | ESC | ! | @ | # | $ | % | ^ | & | * | ( | ) | Back | ↑ |
+|--------|-----|---|---|---|---|---|---|---|---|---|-------|----|
+| **Line 2** | TAB | { | [ | ] | \ | / | \| | ` | Fn | ↓ |
+| **Line 3** | Shift | ; | : | ' | " | , | . | ? | / | Enter | ← |
+| **Line 4** | Sym | < | > | SPACE | → |
+
+#### Shift+Key
+
+Буквы заглавные (Q, W, E...). Backspace → Delete (0x7F). Цифры без изменений.
+
+#### Fn+Key
+
+Коды в диапазоне **0x80–0xAF** — пользовательские, требуют настройки.
+
+</details>
+
 ### Режимы вывода
 
 | Режим | Действие | Пример (Q) |

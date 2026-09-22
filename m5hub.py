@@ -82,6 +82,12 @@ class Hub:
         self._t={'j':0,'s':0,'k':0}
         self._sb=False; self._sf=False; self._sp=0
         self._kl=0
+        self._kdown={}       # индекс клавиши -> код, которым она нажата (для верного отпускания)
+        self._up={}          # счётчик пустых опросов по индексу (дебаунс отпусканий)
+        self._mode=0         # активный слой: 0 обычный, 1 Shift, 2 Sym, 3 Fn
+        self._mode_used=False  # слой уже сработал на клавише — погасить после её отпускания
+        self._t9_skip=0      # сколько опросов молчать после переключения Т9 (гасим «хвост» комбинации)
+        self._mods_prev=0    # какие модификаторы были зажаты в прошлом опросе
         self._layout='us'        # current keyboard layout
         self._t9=None            # T9Engine (лениво, при первом включении)
         self._t9_active=False    # Т9-режим (Fn+Tab)
@@ -355,44 +361,122 @@ class Hub:
             pass
 
     def _k(self):
+        """Клавиатура CardKB: берём состояние из битовой маски зажатых клавиш.
+
+        Прошивка с режимом сканирования отдаёт 7 байт: первые 6 — по биту на каждую
+        из 48 клавиш (бит i = клавиша с индексом i зажата прямо сейчас), седьмой —
+        модификаторы (0x01 Shift, 0x02 Sym, 0x04 Fn). Код клавиши берём из таблицы
+        прошивки по индексу и режиму, нажимаем при появлении бита и отпускаем при
+        снятии. Поэтому удержание работает везде, а не только в играх.
+        """
         try:
-            d=self.rr(2,0x5F,1); k=d[0] if d else 0
-            if k!=self._kl:
-                # DEBUG: log raw codes to /tmp/cardkb.log
-                with open('/tmp/cardkb.log','a') as f:
-                    f.write(f'{time.time():.3f} raw=0x{k:02X} prev=0x{self._kl:02X}\n')
-                # Fn+Space (0xAF) — переключение раскладки US/RU
-                if k==0xAF:
+            if self._t9_active:
+                self._k_t9()
+                return
+            dd=self.rd(2,0x5F,0x10,7)
+            if not dd or len(dd)<7:
+                return
+            bits=int.from_bytes(dd[:6],'little'); mods=dd[6]
+
+            # ── Дебаунс отпусканий ──
+            # Маска читается из буфера предыдущего цикла и может на один опрос
+            # «мигнуть»: клавиша то есть, то нет. Из-за этого она печаталась
+            # дважды — символом и следом обычным знаком. Считаем клавишу
+            # отпущенной только после двух подряд пустых опросов.
+            now=set()
+            for i in range(48):
+                if (bits>>i)&1: now.add(i)
+            for i in now:
+                self._up[i]=0
+            for i in self._kdown:
+                self._up[i]=self._up.get(i,0)+1
+            held_idx={i for i in self._kdown if self._up.get(i,0)<2} | now
+
+            # ── Слои Shift/Sym/Fn: одноразовые, как в стоковой прошивке ──
+            for mbit, mnum in ((0x01, 1), (0x02, 2), (0x04, 3)):
+                if (mods & mbit) and not (self._mods_prev & mbit):
+                    self._mode = mnum
+                    self._mode_used = False
+            self._mods_prev = mods
+            mode = self._mode
+
+            # ── Нажатия: код берём по индексу и режиму, запоминаем его для отпускания ──
+            for i in sorted(held_idx - set(self._kdown)):
+                k=KEY_MAP[i][mode]
+                if not k: continue
+                self._kdown[i]=k
+                if mode:
+                    # Слой израсходован этой клавишей (в том числе клавишей слоя Fn,
+                    # коды которого драйверу незнакомы). Иначе режим остался бы
+                    # включённым и одна и та же комбинация срабатывала бы без конца.
+                    self._mode_used = True
+                if k==0xAF:                    # Fn+Space — раскладка US/RU
                     self._layout='ru' if self._layout=='us' else 'us'
                     subprocess.run(['setxkbmap',self._layout], capture_output=True,
                                    env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
                     time.sleep(0.1)
-                    self._layout=self._real_layout()  # GNOME мог не дать переключить — честная синхронизация
+                    self._layout=self._real_layout()
                     print(f'[m5hub] Раскладка: {self._layout.upper()}')
-                # Fn+Backspace (0x8B) — гашение экрана (экономия зарядки)
+                elif k==0x8B:                  # Fn+Backspace — гашение экрана
+                    subprocess.run(['xset','dpms','force','off'], capture_output=True,
+                                   env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
+                    print('[m5hub] 🌙 Экран погашен (Fn+Backspace)')
+                elif k==0xA3:                  # Fn+Enter — свернуть все окна
+                    subprocess.run(['xdotool','key','--clearmodifiers','ctrl+alt+d'], capture_output=True,
+                                   env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
+                    print('[m5hub] 🗂️ Свернуть все окна (показать рабочий стол)')
+                elif k==0x8C:                  # Fn+Tab — Т9-режим
+                    self._t9_toggle()
+                    # Комбинация переключает ветку разбора, и «хвост» от самой
+                    # клавиши Tab успевал проскочить как обычный Tab. Гасим:
+                    # чистим состояние и молчим несколько опросов.
+                    self._kdown.clear(); self._mode=0; self._mode_used=False
+                    self._t9_skip=3
+                elif k in CKM:
+                    self._kv(CKM[k],1,k)
+                self._kl=k
+                with open('/tmp/cardkb.log','a') as f:
+                    f.write(f'{time.time():.3f} press=0x{k:02X} mode={mode} idx={i}\n')
+
+            # ── Отпускания: отпускаем именно тот код, который нажимали ──
+            for i in sorted(set(self._kdown) - held_idx):
+                k=self._kdown.pop(i)
+                if k in CKM:
+                    self._kv(CKM[k],0,k)
+
+            # ── Одноразовость слоя: гасим, когда отпущена клавиша, которая им пользовалась ──
+            if self._mode and self._mode_used and not self._kdown:
+                self._mode = 0
+                self._mode_used = False
+        except: pass
+
+    def _k_t9(self):
+        """Т9-режим: разбор как раньше, по одиночным кодам (эта ветка проверена временем)."""
+        try:
+            if self._t9_skip>0:
+                # Молчим после переключения Т9: дочитываем линию, но ничего не нажимаем,
+                # иначе комбинация Fn+Tab печатала лишний Tab.
+                self._t9_skip-=1
+                d=self.rr(2,0x5F,1); self._kl=d[0] if d else 0
+                return
+            d=self.rr(2,0x5F,1); k=d[0] if d else 0
+            if k!=self._kl:
+                if k==0xAF:
+                    self._t9_toggle(); self._kl=0; return
                 if k==0x8B:
                     subprocess.run(['xset','dpms','force','off'], capture_output=True,
                                    env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
                     print('[m5hub] 🌙 Экран погашен (Fn+Backspace)')
-                    self._kl=0
-                    return
-                # Fn+Enter (0xA3) — свернуть все окна / показать рабочий стол (MATE: Ctrl+Alt+D)
+                    self._kl=0; return
                 if k==0xA3:
-                    subprocess.run(['xdotool','key','--clearmodifiers','ctrl+alt+d'],
-                                   capture_output=True,
+                    subprocess.run(['xdotool','key','--clearmodifiers','ctrl+alt+d'], capture_output=True,
                                    env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
                     print('[m5hub] 🗂️ Свернуть все окна (показать рабочий стол)')
-                    self._kl=0
-                    return
-                # Fn+Tab (0x8C) — включить/выключить Т9-режим (русский ввод)
+                    self._kl=0; return
                 if k==0x8C:
-                    self._t9_toggle()
-                    self._kl=0
-                    return
-                # Т9-режим: перехват цифр/стрелок/подтверждения, остальное — нативно
-                if self._t9_active and self._t9_handle(k):
-                    self._kl=k
-                    return
+                    self._t9_toggle(); self._kl=0; return
+                if k and self._t9_handle(k):
+                    self._kl=k; return
                 if self._kl and self._kl in CKM: self._kv(CKM[self._kl],0,self._kl)
                 if k and k in CKM: self._kv(CKM[k],1,k)
                 self._kl=k
@@ -685,6 +769,61 @@ CKM = {
     **{c: c for c in range(0x5C, 0x7F)},  # \ through ~
     **{c: c for c in range(0x61, 0x7B)},  # a-z
 }
+
+# Таблица клавиш прошивки CardKB (M5Unit-KEYBOARD, CardKB_Firmware):
+# индекс = позиция в матрице, столбцы = режимы 0 обычный / 1 Shift / 2 Sym / 3 Fn.
+# Нужна, чтобы брать удержание клавиш из битовой маски (регистр 0x10).
+KEY_MAP = [
+    (27, 27, 27, 128),
+    (49, 49, 33, 129),
+    (50, 50, 64, 130),
+    (51, 51, 35, 131),
+    (52, 52, 36, 132),
+    (53, 53, 37, 133),
+    (54, 54, 94, 134),
+    (55, 55, 38, 135),
+    (56, 56, 42, 136),
+    (57, 57, 40, 137),
+    (48, 48, 41, 138),
+    (8, 127, 8, 139),
+    (9, 9, 9, 140),
+    (113, 81, 123, 141),
+    (119, 87, 125, 142),
+    (101, 69, 91, 143),
+    (114, 82, 93, 144),
+    (116, 84, 47, 145),
+    (121, 89, 92, 146),
+    (117, 85, 124, 147),
+    (105, 73, 126, 148),
+    (111, 79, 39, 149),
+    (112, 80, 34, 150),
+    (0, 0, 0, 0),
+    (180, 180, 180, 152),
+    (181, 181, 181, 153),
+    (97, 65, 59, 154),
+    (115, 83, 58, 155),
+    (100, 68, 96, 156),
+    (102, 70, 43, 157),
+    (103, 71, 45, 158),
+    (104, 72, 95, 159),
+    (106, 74, 61, 160),
+    (107, 75, 63, 161),
+    (108, 76, 0, 162),
+    (13, 13, 13, 163),
+    (182, 182, 182, 164),
+    (183, 183, 183, 165),
+    (122, 90, 0, 166),
+    (120, 88, 0, 167),
+    (99, 67, 0, 168),
+    (118, 86, 0, 169),
+    (98, 66, 0, 170),
+    (110, 78, 0, 171),
+    (109, 77, 0, 172),
+    (44, 44, 60, 173),
+    (46, 46, 62, 174),
+    (32, 32, 32, 175),
+]
+
 
 
 # ── Т9-движок и OSD-окно (русский набор цифрами) ───────────────────

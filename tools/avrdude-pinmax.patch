@@ -1,0 +1,30 @@
+Поднятие предела номеров линий GPIO в avrdude (проверено на avrdude 7.1).
+
+Без этой правки avrdude отвергает номера линий больше 400:
+    avrdude yyerror() error: pin must be in the range 0-400
+А у Raspberry Pi 5 база GPIO-чипа RP1 = 569, поэтому все нужные линии «не влезают»,
+и отказ происходит ещё на чтении конфига — со стороны это выглядит как «мёртвое железо».
+
+Применять в дереве исходников avrdude:
+    patch -p1 < avrdude-pinmax.patch
+    cmake -S . -B build -DHAVE_LINUXGPIO=1
+    cmake --build build -j$(nproc)
+    sudo cmake --install build
+
+--- a/src/libavrdude.h
++++ b/src/libavrdude.h
+@@ -423,12 +423,12 @@
+ #define PIN_MASK    (UINT_MAX>>1)
+ #define PIN_INVERSE (~(PIN_MASK))	/* flag for inverted pin in serbb */
+ #define PIN_MIN     0   /* smallest allowed pin number */
+-#define PIN_MAX     31  /* largest allowed pin number */
++#define PIN_MAX     1024 /* largest allowed pin number (поднято под Raspberry Pi 5: линии 569+) */
+ 
+ #ifdef HAVE_LINUXGPIO
+ /* Embedded systems might have a lot more gpio than only 0-31 */
+ #undef PIN_MAX
+-#define PIN_MAX     400 /* largest allowed pin number */
++#define PIN_MAX     1024 /* largest allowed pin number (поднято под Raspberry Pi 5: линии 569+) */
+ #endif
+ 
+ /** Number of pins in each element of the bitfield */

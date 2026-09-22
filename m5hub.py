@@ -64,10 +64,18 @@ class Hub:
         _g.append(self.fd)
         self._rst()
 
-        self.d=display.Display(':0')
-        self.ro=self.d.screen().root
-        self.sw=self.d.screen().width_in_pixels
-        self.sh=self.d.screen().height_in_pixels
+        # Клавиатура CardKB: принудительно обычный режим (регистр 0x20 = 0).
+        # Нужно потому, что игровой мост game_input.py включает в клавиатуре режим
+        # сканирования нажатий; если он завершится аварийно, клавиатура в системе
+        # осталась бы немой. Здесь мы это лечим при каждом старте.
+        try:
+            self.wr(2, 0x5F, 0x20, [0])
+        except Exception:
+            pass
+
+        if not self._x_connect():
+            print("[m5hub] ⚠️ X недоступен при старте — сервис будет ждать", flush=True)
+            self._x_reconnect()
         print(f"[m5hub] Экран: {self.sw}x{self.sh}")
 
         self.go=True
@@ -161,6 +169,38 @@ class Hub:
             else:
                 self._cx,self._cy=mx,my
                 print(f"[m5hub] ⚙️ Центр(медиана): X={self._cx} Y={self._cy}")
+
+    def _x_connect(self):
+        """Устанавливает соединение с X. True при успехе."""
+        try:
+            self.d=display.Display(':0')
+            self.ro=self.d.screen().root
+            self.sw=self.d.screen().width_in_pixels
+            self.sh=self.d.screen().height_in_pixels
+            return True
+        except Exception:
+            return False
+
+    def _x_reconnect(self, reason=None):
+        """Переподключение к X после обрыва (перезапуск LightDM/X).
+        Ждёт до ~120 с. Возвращает True, когда соединение восстановлено."""
+        if reason is not None:
+            print(f"[m5hub] ⚠️ Обрыв X ({type(reason).__name__}) — переподключаюсь…", flush=True)
+        for _ in range(120):
+            if self._x_connect():
+                # CardKB — US QWERTY: возвращаем раскладку и центрируем курсор
+                subprocess.run(['setxkbmap','us'], capture_output=True,
+                               env={'DISPLAY':os.environ.get('DISPLAY',':0'),
+                                    'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
+                subprocess.run(['xdotool','mousemove',str(self.sw//2),str(self.sh//2)],
+                               capture_output=True,
+                               env={'DISPLAY':os.environ.get('DISPLAY',':0'),
+                                    'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
+                print(f"[m5hub] 🔄 X переподключён ({self.sw}x{self.sh})", flush=True)
+                return True
+            time.sleep(1.0)
+        print("[m5hub] ⚠️ X недоступен более 2 минут", flush=True)
+        return False
 
     def _j(self):
         try:
@@ -336,11 +376,12 @@ class Hub:
                     print('[m5hub] 🌙 Экран погашен (Fn+Backspace)')
                     self._kl=0
                     return
-                # Fn+Enter (0xA3) — открыть «Обзор» (GNOME Overview / список программ)
+                # Fn+Enter (0xA3) — свернуть все окна / показать рабочий стол (MATE: Ctrl+Alt+D)
                 if k==0xA3:
-                    subprocess.run(['xdotool','key','Super_L'], capture_output=True,
+                    subprocess.run(['xdotool','key','--clearmodifiers','ctrl+alt+d'],
+                                   capture_output=True,
                                    env={'DISPLAY':os.environ.get('DISPLAY',':0'),'XAUTHORITY':os.environ.get('XAUTHORITY','/home/orangepi/.Xauthority')})
-                    print('[m5hub] 🗂️ Обзор (GNOME Overview)')
+                    print('[m5hub] 🗂️ Свернуть все окна (показать рабочий стол)')
                     self._kl=0
                     return
                 # Fn+Tab (0x8C) — включить/выключить Т9-режим (русский ввод)
@@ -577,8 +618,25 @@ class Hub:
                 if self._t9_active and t-self._t9_led_t>=2.0:
                     self._led_j(0,80,0)
                     self._t9_led_t=t
+                # Проверка живости X: при перезапуске LightDM/X соединение рвётся
+                # внутри _j/_s/_k (они глотают исключения своими except), поэтому
+                # пингуем X сами и при обрыве переподключаемся — клавиатура,
+                # джойстик и скролл продолжают работать.
+                if t-self._t.get('x',0)>=2.0:
+                    self._t['x']=t
+                    try:
+                        self.d.flush()
+                    except Exception as e:
+                        self._x_reconnect(e)
+                        self._t['x']=time.time()
                 time.sleep(0.002)
             except KeyboardInterrupt: break
+            except Exception as e:
+                # Обрыв X (перезапуск LightDM/X) или иной сбой — не падаем,
+                # а восстанавливаем соединение и продолжаем работу с клавиатурой,
+                # джойстиком и скроллом.
+                if not self._x_reconnect(e):
+                    time.sleep(2.0)
         print(f"[m5hub] Off (ошибок I2C: {self._err_count})")
 
     def cleanup(self):

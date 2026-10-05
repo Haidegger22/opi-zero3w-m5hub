@@ -117,6 +117,28 @@ class Hub:
         # игрового курсора на время матча: на рабочем столе перенос виден как
         # прыжок курсора в центр и мешает (Артём, 24.09.2026).
         self.RECENTER_FLAG = '/tmp/m5hub-recenter'
+        # Прямой ход указателя без сглаживания: включается сторожем игр на время игры со
+        # своим курсором (Worms). Артём, 06.10.2026: «начинаю двигать в другую сторону,
+        # а он доигрывает два последних движения джойстиком». На рабочем столе сглаживание
+        # остаётся — оно даёт плавность.
+        self.DIRECT_FLAG = '/tmp/m5hub-direct'
+        # Считывание координат джойстика для разбора (Артём, 06.10.2026): пишем каждое
+        # касание — сырые оси, сглаженные, снап-направление, шаг за такт и позицию указателя.
+        # Шаг указателя в игре (флаг сторожа): мелкий и нелинейный.
+        # Разбор 06.10.2026: такт ~30 мс, а шаг при полном отклонении был 110 пикс —
+        # это 3500 пикс/с и прыжки по 100 пикселей: «очень резко» и промахи мимо цели.
+        # Стало: 2.5 пикс на слабом наклонении (точное наведение) → 22 пикс на полном
+        # (около 730 пикс/с, экран проходится за 1.4 с).
+        self.GAME_SPEED_MIN = 40.0    # пикс/с при слабом наклонении (точное наведение)
+        self.GAME_SPEED_MAX = 330.0   # пикс/с при полном отклонении
+        self.GAME_CURVE = 1.5
+        self._t_last = None           # время прошлого шага — скорость считаем по факту
+        # Плавность: шаг за такт дробим на подшаги (игра читает указатель чаще, чем
+        # наш такт, и видит короткие шаги вместо одного прыжка).
+        self.GAME_SUB = 3
+        self.GAME_SUB_SLEEP = 0.004
+        self.JOYLOG_FLAG = '/tmp/m5hub-joylog'
+        self.JOYLOG = '/tmp/m5hub-joylog.txt'
         self.SNAP = True      # snap к направлениям (эмуляция D-pad)
         self.SNAP_DIRS = 4    # Артём выбрал 4 стороны (24.09.2026): диагонали убрали,
                               # потому что «вниз» уезжал в сторону. При 8 сторонах
@@ -218,11 +240,19 @@ class Hub:
         return False
 
     def _j(self):
+        _t0=time.time()
+        # Где указатель на самом деле (до нашего хода): если он не там, куда мы его
+        # в прошлом такте поставили, значит его сдвигает кто-то ещё — например игра.
+        try:
+            _pq=self.ro.query_pointer(); _rx,_ry=int(_pq.root_x),int(_pq.root_y)
+        except Exception:
+            _rx=_ry=-1
         try:
             d=self.rd(0,0x63,0x00,4)
         except:
             self._err_count+=1
             return
+        _t_rd=time.time()
         x_raw=d[0]|(d[1]<<8)
         y_raw=d[2]|(d[3]<<8)
         dx=x_raw-self._cx
@@ -286,11 +316,21 @@ class Hub:
             self._dir = None
 
         # Медианный фильтр ПЕРЕД snap — сглаживает резкие переходы между
-        # осями, чтобы snap не выдал ложную диагональ в момент смены направления
-        self._dx_hist.append(dx)
-        self._dy_hist.append(dy)
-        sdx=statistics.median(self._dx_hist)
-        sdy=statistics.median(self._dy_hist)
+        # осями, чтобы snap не выдал ложную диагональ в момент смены направления.
+        # НО в игре он выключен: окно 6 отсчётов при такте 30 мс — это ~180 мс памяти,
+        # из-за неё указатель «догоняет» прежние движения (Артём, 06.10.2026:
+        # «догонялки курсора предыдущие движения остаются»). В игре берём сырые
+        # значения стика, а стабильность даёт снап направлений и гистерезис мёртвой зоны.
+        if os.path.exists(self.DIRECT_FLAG):
+            self._dx_hist.clear()
+            self._dy_hist.clear()
+            sdx=dx
+            sdy=dy
+        else:
+            self._dx_hist.append(dx)
+            self._dy_hist.append(dy)
+            sdx=statistics.median(self._dx_hist)
+            sdy=statistics.median(self._dy_hist)
 
         # Snap к ближайшему направлению (эмуляция D-pad) по сглаженным
         # значениям. Угловой гистерезис: текущее направление «липкое» — чтобы
@@ -314,11 +354,36 @@ class Hub:
                 sdx = int(round(math.cos(a) * smag))
                 sdy = int(round(math.sin(a) * smag))
 
-        # Простой линейный scale
+        # Простой линейный scale (рабочий стол: плавно, как привычно)
         sx=int(sdx/self._scale*110)
         sy=int(sdy/self._scale*110)
 
-        if sx==0 and sy==0: return
+        # В ИГРЕ считаем шаг от ВРЕМЕНИ, а не от такта: цикл драйвера иногда тормозит
+        # (чтение клавиатуры), и при шаге «на такт» скорость падала (замер 06.10.2026:
+        # такт 85 мс вместо 22 → 188 пикс/с вместо задуманных). Теперь шаг = скорость × dt.
+        if os.path.exists(self.DIRECT_FLAG):
+            _now=time.time()
+            _dt=_now-self._t_last if self._t_last else 0.030
+            _dt=max(0.010, min(0.20, _dt))
+            self._t_last=_now
+            _mg=math.hypot(sdx, sdy)
+            if _mg > 0:
+                _rel=min(1.0, _mg/32768.0)
+                _sp=self.GAME_SPEED_MIN+(self.GAME_SPEED_MAX-self.GAME_SPEED_MIN)*(_rel**self.GAME_CURVE)
+                _st=max(1.0, _sp*_dt)
+                sx=int(round(sdx/_mg*_st))
+                sy=int(round(sdy/_mg*_st))
+
+        if sx==0 and sy==0:
+            if os.path.exists(self.JOYLOG_FLAG):
+                try:
+                    with open(self.JOYLOG, 'a') as f:
+                        f.write('%.3f dx=%d dy=%d mag=%.0f СТОП (шаг 0)\n' % (time.time(), dx, dy, mag))
+                except Exception:
+                    pass
+            return
+
+        # (значения пишем в конце, вместе с замерами времени)
 
         # Виртуальная позиция
         # Желаемая позиция без ограничения — по ней видно упор в край экрана
@@ -340,11 +405,42 @@ class Hub:
         # Целевая позиция
         tx=max(0,min(self.sw-1,ux))
         ty=max(0,min(self.sh-1,uy))
-        # Экспоненциальное сглаживание (0.30 = 30% к цели за тик)
-        self._vx+=(tx-self._vx)*0.30
-        self._vy+=(ty-self._vy)*0.30
-        self.ro.warp_pointer(int(self._vx),int(self._vy))
-        self.d.flush()
+        # Прямой ход, если игра ведёт свой курсор (флаг ставит сторож игр):
+        # сглаживание в игре читается как «курсор доигрывает прошлые движения».
+        if os.path.exists(self.DIRECT_FLAG):
+            # ОТНОСИТЕЛЬНЫЙ ход: указатель игры она сама центрует, поэтому абсолютный
+            # перенос давал игре прыжок «от центра до нашей позиции» — это и читалось как
+            # «догонялки предыдущих движений». Берём текущее положение указателя и
+            # добавляем ровно наш шаг, дробя его на подшаги для ровности.
+            try:
+                _pq=self.ro.query_pointer()
+                _cx,_cy=int(_pq.root_x),int(_pq.root_y)
+            except Exception:
+                _cx,_cy=int(self._vx),int(self._vy)
+            _gx=max(0,min(self.sw-1,_cx+sx))
+            _gy=max(0,min(self.sh-1,_cy+sy))
+            for _i in range(1, self.GAME_SUB+1):
+                self._vx = _cx + (_gx-_cx) * _i / self.GAME_SUB
+                self._vy = _cy + (_gy-_cy) * _i / self.GAME_SUB
+                self.ro.warp_pointer(int(self._vx), int(self._vy))
+                self.d.flush()
+                if _i < self.GAME_SUB:
+                    time.sleep(self.GAME_SUB_SLEEP)
+        else:
+            # Экспоненциальное сглаживание (0.30 = 30% к цели за тик)
+            self._vx+=(tx-self._vx)*0.30
+            self._vy+=(ty-self._vy)*0.30
+            self.ro.warp_pointer(int(self._vx),int(self._vy))
+            self.d.flush()
+        if os.path.exists(self.JOYLOG_FLAG):
+            try:
+                _te=time.time()
+                with open(self.JOYLOG, 'a') as f:
+                    f.write('%.3f чтение=%.0f прочее=%.0f такт=%.0f мс | dx=%d dy=%d mag=%.0f sdx=%d sdy=%d dir=%s sx=%d sy=%d vx=%.0f vy=%.0f реал=%d,%d\n' % (
+                        _te, (_t_rd-_t0)*1000.0, (_te-_t_rd)*1000.0, (_te-_t0)*1000.0,
+                        dx, dy, mag, sdx, sdy, str(self._dir), sx, sy, self._vx, self._vy, _rx, _ry))
+            except Exception:
+                pass
 
     def _s(self):
         try:
@@ -734,7 +830,9 @@ class Hub:
         while self.go:
             try:
                 t=time.time()
-                if t-self._t['j']>=0.030: self._j(); self._t['j']=t
+                # В игре опрашиваем джойстик чаще (22 мс вместо 30): шаг мельче, ход ровнее
+                _jp = 0.022 if os.path.exists(self.DIRECT_FLAG) else 0.030
+                if t-self._t['j']>=_jp: self._j(); self._t['j']=t
                 if t-self._t['s']>=0.020: self._s(); self._t['s']=t
                 if t-self._t['k']>=0.060: self._k(); self._t['k']=t
                 # Поддержание зелёного LED джойстика, пока Т9 активен (STM32G0 гаснет по таймауту)

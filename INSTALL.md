@@ -18,30 +18,34 @@ cd opi-zero3w-m5hub
 sudo python3 m5hub.py
 ```
 
-Служба systemd (`/etc/systemd/system/m5hub.service`):
+Служба systemd (`/etc/systemd/system/m5hub.service`). Домашний каталог подставляется сам
+из `$HOME` — менять руками нечего:
 
-```ini
+```bash
+sudo tee /etc/systemd/system/m5hub.service >/dev/null << UNIT_EOF
 [Unit]
-Description=M5Hub driver
-After=multi-user.target
+Description=M5Hub driver (джойстик, скролл, CardKB)
+After=graphical.target
+StartLimitIntervalSec=0
+StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi
+WorkingDirectory=$HOME/m5hub
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
-ExecStart=/usr/bin/python3 /home/pi/m5hub/m5hub.py
+Environment=XAUTHORITY=$HOME/.Xauthority
+Environment=HOME=$HOME
+ExecStart=/usr/bin/python3 -u $HOME/m5hub/m5hub.py
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
-```
+WantedBy=graphical.target
+UNIT_EOF
 
-```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now m5hub
-systemctl status m5hub
+systemctl status m5hub --no-pager
 ```
 
 Шина I2C включается в `orangepi-config` → System → Hardware → I2C0,
@@ -144,3 +148,59 @@ held = lambda i: bool((bits >> i) & 1)
 
 Проверка удержания — логгер X-событий `xrec.py`: при зажатой стрелке в логе должна
 быть одна строка PRESS и одна RELEASE с большим промежутком между ними.
+
+## 4. Сторож игрового курсора (`watcher/game-cursor.py`)
+
+Курсор-комета скрывает системный указатель на рабочем столе, а в игре нужен **курсор самой
+игры**. Сторож смотрит на класс окна игры и переключает режимы, а драйверу сообщает о режиме
+**файлами-пометками** в `/tmp`:
+
+| Пометка | Кто ставит | Что она разрешает в `m5hub.py` |
+|---|---|---|
+| `/tmp/m5hub-recenter` | сторож, режим матча (класс `hwengine`) | перенос указателя в центр, когда он упёрся в край экрана |
+| `/tmp/m5hub-direct` | сторож, режим `owncursor` (класс `wa.exe` — Worms Armageddon) | игровой режим стика: относительный ход, без медианного фильтра, скорость по времени |
+| `/tmp/m5hub-joylog` | человек, вручную (диагностика) | журнал координат стика `/tmp/m5hub-joylog.txt` |
+
+Режимы сторожа по классу окна: рабочий стол и меню игры — комета; матч (`hwengine`) — курсор
+игры плюс мост «джойстик → клавиши»; игра со своим курсором (`wa.exe`) — только курсор игры,
+комета, оверлей и мост выключены.
+
+```bash
+# 1) положить сторожа рядом с остальными скриптами
+mkdir -p ~/.local/bin
+install -m 755 watcher/game-cursor.py ~/.local/bin/game-cursor.py
+
+# 2) юнит пользовательской службы
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/game-cursor.service << 'UNIT_EOF'
+[Unit]
+Description=Курсор для игр: комета на рабочем столе, курсор игры в игре
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/bin/game-cursor.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT_EOF
+
+# 3) включить (и Linger, чтобы служба жила без входа в сессию)
+systemctl --user daemon-reload
+systemctl --user enable --now game-cursor.service
+sudo loginctl enable-linger "$USER"
+systemctl --user status game-cursor --no-pager
+```
+
+Полная версия сторожа и остальные файлы курсора (комета, пустой курсор, тема) — репозиторий
+[`Haidegger22/opi-zero3w-cursor-comet`](https://github.com/Haidegger22/opi-zero3w-cursor-comet).
+
+**Проверка:** запустить игру — в журнале (`journalctl --user -u game-cursor -n 20`) должно
+появиться «ИГРА ('wa.exe', 'wa.exe') — курсор ведёт игра, комета убрана» и «прямой ход указателя
+(без сглаживания): включён». Обратно: `xdotool windowunmap <окно игры>` → «рабочий стол — комета
+вернулась»; `xdotool windowmap <окно игры>` → снова режим игры.
+
+**Свою игру добавить так:** узнать класс окна (`xprop WM_CLASS` или строка `("имя" "класс")`
+в `xwininfo -root -tree`), дописать класс в набор `GAMES` и — если игра ведёт курсор сама —
+в набор `OWN_CURSOR`, перезапустить службу и проверить оба перехода (unmap/map).

@@ -451,17 +451,20 @@ class Hub:
                 self._wh(v); self._led(0,50,50); time.sleep(0.03); self._led(0,0,0)
         except: pass
         try:
+            # Кнопка колеса (Scroll) = ПРАВАЯ кнопка мыши НА УДЕРЖАНИИ (09.10.2026).
+            # У Артёма: нажал колесо — держим ПКМ, пока колесо зажато; отпустил — отпустили.
+            # Так игра видит обычное удержание правой кнопки, как от настоящей мыши.
+            # Раньше был клик 15 мс: в Disciples II окно характеристик показывается
+            # ПОКА ПКМ зажата, поэтому оно «моргало» и пропадало. Долгой функции
+            # (по времени удержания) нет — есть только удержание как таковое.
             d=self.rd(1,0x40,0x20,1)
-            b=d[0]==0; t=time.time()
+            b=d[0]==0
             if b and not self._sb:
-                self._sb=1; self._sp=t; self._sf=0
-            elif b and not self._sf and (t-self._sp)>=0.5:
-                self._cl(3); self._led(50,0,0); self._sf=1
+                self._sb=1
+                self._btn(3,True); self._led(0,50,0)
             elif not b and self._sb:
                 self._sb=0
-                if not self._sf:
-                    self._led(0,50,0); self._cl(1); time.sleep(0.05)
-                self._led(0,0,0)
+                self._btn(3,False); self._led(0,0,0)
         except: pass
 
     def _wh(self,c):
@@ -475,6 +478,19 @@ class Hub:
         xtest.fake_input(self.d,X.ButtonPress,btn); self.d.flush()
         time.sleep(0.015)
         xtest.fake_input(self.d,X.ButtonRelease,btn); self.d.flush()
+
+    def _btn(self,btn,down):
+        """Нажать (down=True) или отпустить (down=False) кнопку мыши отдельным шагом.
+
+        Нужно для удержания правой кнопки колесом Scroll: игра (Disciples II)
+        показывает окно характеристик, пока ПКМ зажата, поэтому клик на 15 мс
+        не годится — кнопку держим столько, сколько зажато колесо.
+        """
+        try:
+            xtest.fake_input(self.d, X.ButtonPress if down else X.ButtonRelease, btn)
+            self.d.flush()
+        except Exception:
+            pass
 
     def _led(self,r,g,b):
         """RGB LED на Scroll (канал 1, адрес 0x40)"""
@@ -876,6 +892,14 @@ class Hub:
             print(f'[m5hub] Отпущено клавиш при завершении: {n}')
         except Exception as e:
             print('[m5hub] клавиши не отпустились:', e)
+        # Колесо Scroll держит ПКМ: если драйвер останавливают, пока кнопка зажата,
+        # кнопку нужно отпустить, иначе она остаётся зажатой в X-сервере (как с клавишами).
+        try:
+            if self._sb:
+                self._btn(3, False); self._sb=0
+                print('[m5hub] Снято удержание ПКМ (колесо) при завершении')
+        except Exception as e:
+            print('[m5hub] ПКМ не отпустилась:', e)
         self._led(0,0,0)
         try: self._rst()  # сброс PaHub — чтобы шина не осталась залипшей
         except: pass

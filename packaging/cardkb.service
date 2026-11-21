@@ -1,0 +1,15 @@
+[Unit]
+Description=CardKB (I2C 0x5F) keyboard driver for Orange Pi 4 Pro
+After=graphical.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/orangepi/.Xauthority
+ExecStart=/usr/bin/python3 /home/orangepi/m5hub/m5hub-direct.py
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=graphical.target

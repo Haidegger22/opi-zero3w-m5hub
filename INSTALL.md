@@ -204,3 +204,72 @@ systemctl --user status game-cursor --no-pager
 **Свою игру добавить так:** узнать класс окна (`xprop WM_CLASS` или строка `("имя" "класс")`
 в `xwininfo -root -tree`), дописать класс в набор `GAMES` и — если игра ведёт курсор сама —
 в набор `OWN_CURSOR`, перезапустить службу и проверить оба перехода (unmap/map).
+
+## 5. CardKB на Orange Pi 4 Pro напрямую (без PaHub)
+
+Проверено 21.11.2026. На 4 Pro клавиатура подключается к 40-pin гребёнке, PaHub не нужен.
+
+### 5.1. Подключение
+
+```
+жёлтый  → пин 3   (SDA)
+белый   → пин 5   (SCL)
+красный → пин 1 или 17 (3,3 В)
+чёрный  → любой GND (6, 9, 14, 20, 25, 30, 34, 39)
+```
+
+У CardKB жёлтый — это SDA (у Seeed Grove наоборот), не перепутать. Питание только 3,3 В:
+при 5 В подтяжки модуля дадут 5 В на линиях SDA/SCL, а GPIO A733 этого не переносит.
+Если нужно 5 В — ставить двунаправленный шифтер BSS138.
+
+### 5.2. Включить i2c0
+
+```bash
+# в образе оверлея i2c0 нет — скрипт соберёт его из трёх строк DTS и проверит наложением
+sudo bash tools/make-i2c0-overlay.sh
+sudo reboot
+
+ls -l /dev/i2c-0
+sudo /usr/sbin/i2cdetect -y 0        # в строке 50 должен появиться 5f
+sudo /usr/sbin/i2cget -y 0 0x5F 0xFE # 0x01 — прошивка со сканированием матрицы
+```
+
+`i2cdetect` лежит в `/usr/sbin`, поэтому от обычного пользователя «команда не найдена» —
+это не отсутствие пакета.
+
+### 5.3. Драйвер и служба
+
+Драйвер наследует весь разбор клавиатуры из `m5hub.py`, но без PaHub:
+
+```bash
+mkdir -p ~/m5hub
+cp m5hub.py m5hub-direct.py ~/m5hub/
+python3 -m py_compile ~/m5hub/m5hub.py ~/m5hub/m5hub-direct.py
+
+sudo install -m 644 packaging/cardkb.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cardkb
+systemctl is-active cardkb
+journalctl -u cardkb -n 10 --no-pager
+```
+
+Служба обязательно от root: `/dev/i2c-0` — `crw-rw---- root:i2c`, у пользователя доступа нет.
+
+### 5.4. Словарь T9
+
+```bash
+# скопировать с Zero (или с любой машины, где словарь уже пополнялся)
+mkdir -p ~/.openclaw/workspace/t9
+scp <zero>:/home/orangepi/.openclaw/workspace/t9/ru_t9.json ~/.openclaw/workspace/t9/
+md5sum ~/.openclaw/workspace/t9/ru_t9.json    # сверить с источником
+
+# проверка движка: 765 → «что»
+cd ~/m5hub && python3 -c "import m5hub;e=m5hub.T9Engine();[e.add_digit(d) for d in '765'];print(len(e.base))"
+```
+
+### 5.5. Проверка
+
+- ввод текста в любом поле — работает;
+- **Fn+Tab** — T9, цифрами набирается слово, внизу экрана подсказка, подтверждение;
+- **Fn+Space** — US/RU, **Fn+Backspace** — экран гаснет, **Fn+Enter** — свернуть окна,
+  **Fn+O** — F11.
